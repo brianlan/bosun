@@ -20,7 +20,7 @@ import (
 func queuer() {
 	for dp := range tchan {
 		if err := dp.Clean(); err != nil {
-			atomic.AddInt64(&dropped, 1)
+			atomic.AddInt64(&discarded, 1)
 			continue // if anything gets this far that can't be made valid, just drop it silently.
 		}
 		qlock.Lock()
@@ -32,6 +32,10 @@ func queuer() {
 			queue = append(queue, dp)
 			select {
 			case dp = <-tchan:
+				if err := dp.Clean(); err != nil {
+					atomic.AddInt64(&discarded, 1)
+					break // if anything gets this far that can't be made valid, just drop it silently.
+				}
 				continue
 			default:
 			}
@@ -74,7 +78,9 @@ func send() {
 				slog.Infof("sending: %d, remaining: %d", i, len(queue))
 			}
 			qlock.Unlock()
-			Sample("collect.post.batchsize", Tags, float64(len(sending)))
+			if DisableDefaultCollectors == false {
+				Sample("collect.post.batchsize", Tags, float64(len(sending)))
+			}
 			sendBatch(sending)
 		} else {
 			qlock.Unlock()
@@ -167,7 +173,7 @@ func SendDataPoints(dps []*opentsdb.DataPoint, tsdb string) (*http.Response, err
 	Add("collect.post.total_bytes", Tags, int64(buf.Len()))
 
 	if UseNtlm {
-		resp, err := ntlm.DoNTLMRequest(client, req)
+		resp, err := ntlm.DoNTLMRequest(DefaultClient, req)
 
 		if resp.StatusCode == 401 {
 			slog.Errorf("Scollector unauthorized to post data points to tsdb. Terminating.")
@@ -177,6 +183,6 @@ func SendDataPoints(dps []*opentsdb.DataPoint, tsdb string) (*http.Response, err
 		return resp, err
 	}
 
-	resp, err := client.Do(req)
+	resp, err := DefaultClient.Do(req)
 	return resp, err
 }

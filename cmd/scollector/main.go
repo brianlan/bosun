@@ -27,6 +27,7 @@ import (
 	"bosun.org/slog"
 	"bosun.org/util"
 	"github.com/BurntSushi/toml"
+	"github.com/facebookgo/httpcontrol"
 )
 
 var (
@@ -46,6 +47,18 @@ var (
 	mains []func()
 )
 
+type scollectorHTTPTransport struct {
+	UserAgent string
+	http.RoundTripper
+}
+
+func (t *scollectorHTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Add("User-Agent", t.UserAgent)
+	}
+	return t.RoundTripper.RoundTrip(req)
+}
+
 func main() {
 	flag.Parse()
 	if *flagToToml != "" {
@@ -64,6 +77,20 @@ func main() {
 		m()
 	}
 	conf := readConf()
+	ua := "Scollector/" + version.ShortVersion()
+	if conf.UserAgentMessage != "" {
+		ua += fmt.Sprintf(" (%s)", conf.UserAgentMessage)
+	}
+	client := &http.Client{
+		Transport: &scollectorHTTPTransport{
+			ua,
+			&httpcontrol.Transport{
+				RequestTimeout: time.Minute,
+			},
+		},
+	}
+	http.DefaultClient = client
+	collect.DefaultClient = client
 	if *flagHost != "" {
 		conf.Host = *flagHost
 	}
@@ -220,7 +247,7 @@ func main() {
 	if err := collect.InitChan(u, "scollector", cdp); err != nil {
 		slog.Fatal(err)
 	}
-	if version.VersionDate != "" {
+	if collect.DisableDefaultCollectors == false && version.VersionDate != "" {
 		v, err := strconv.ParseInt(version.VersionDate, 10, 64)
 		if err == nil {
 			go func() {
@@ -245,17 +272,27 @@ func main() {
 		}
 		collect.MaxQueueLen = conf.MaxQueueLen
 	}
-	maxMemMegaBytes := uint64(500)
+	maxMemMB := uint64(500)
 	if conf.MaxMem != 0 {
-		maxMemMegaBytes = conf.MaxMem
+		maxMemMB = conf.MaxMem
 	}
 	go func() {
-		maxMemBytes := maxMemMegaBytes * 1024 * 1024
 		var m runtime.MemStats
 		for range time.Tick(time.Second * 30) {
 			runtime.ReadMemStats(&m)
-			if m.Alloc > maxMemBytes {
-				panic(fmt.Sprintf("memory max reached: (current: %v bytes, max: %v bytes)", m.Alloc, maxMemBytes))
+			allocMB := m.Alloc / 1024 / 1024
+			if allocMB > maxMemMB {
+				slog.Fatalf("memory max runtime reached: (current alloc: %v megabytes, max: %v megabytes)", allocMB, maxMemMB)
+			}
+			//See proccess_windows.go and process_linux.go for total process memory usage.
+			//Note that in linux the rss metric includes shared pages, where as in
+			//Windows the private working set does not include shared memory.
+			//Total memory used seems to scale linerarly with m.Alloc.
+			//But we want this to catch a memory leak outside the runtime (WMI/CGO).
+			//So for now just add any runtime allocations to the allowed total limit.
+			maxMemTotalMB := maxMemMB + allocMB
+			if collectors.TotalScollectorMemoryMB > maxMemTotalMB {
+				slog.Fatalf("memory max total reached: (current total: %v megabytes, current runtime alloc: %v megabytes, max: %v megabytes)", collectors.TotalScollectorMemoryMB, allocMB, maxMemTotalMB)
 			}
 		}
 	}()

@@ -120,6 +120,9 @@ var (
 	WatchProcessesDotNet = func() {}
 
 	KeepalivedCommunity = ""
+
+	//TotalScollectorMemory stores the total memory used by Scollector (including CGO and WMI)
+	TotalScollectorMemoryMB uint64
 )
 
 func init() {
@@ -241,6 +244,11 @@ func AddTS(md *opentsdb.MultiDataPoint, name string, ts int64, value interface{}
 	}
 
 	tags := t.Copy()
+	if host, present := tags["host"]; !present {
+		tags["host"] = util.Hostname
+	} else if host == "" {
+		delete(tags, "host")
+	}
 	// if tags are not cleanable, log a message and skip it
 	if err := tags.Clean(); err != nil {
 		line := ""
@@ -255,11 +263,6 @@ func AddTS(md *opentsdb.MultiDataPoint, name string, ts int64, value interface{}
 		}
 		slog.Errorf("Invalid tagset discovered: %s. Skipping datapoint. Added from: %s", tags.String(), line)
 		return
-	}
-	if host, present := tags["host"]; !present {
-		tags["host"] = util.Hostname
-	} else if host == "" {
-		delete(tags, "host")
 	}
 	if rate != metadata.Unknown {
 		metadata.AddMeta(name, nil, "rate", rate, false)

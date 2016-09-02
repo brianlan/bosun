@@ -20,6 +20,7 @@ import (
 
 	"bosun.org/cmd/bosun/conf"
 	"bosun.org/cmd/bosun/conf/rule"
+	"bosun.org/cmd/bosun/ping"
 	"bosun.org/cmd/bosun/sched"
 	"bosun.org/cmd/bosun/web"
 	"bosun.org/collect"
@@ -59,6 +60,14 @@ func init() {
 	http.DefaultClient = client
 	opentsdb.DefaultClient = client
 	graphite.DefaultClient = client
+	collect.DefaultClient = &http.Client{
+		Transport: &bosunHttpTransport{
+			"Bosun/" + version.ShortVersion(),
+			&httpcontrol.Transport{
+				RequestTimeout: time.Minute,
+			},
+		},
+	}
 }
 
 var (
@@ -146,6 +155,9 @@ func main() {
 			sysProvider.SetTSDBHost(tsdbHost.Host)
 		}
 	}
+	if systemConf.GetPing() {
+		go ping.PingHosts(sched.DefaultSched.Search, systemConf.GetPingDuration())
+	}
 	if sysProvider.GetInternetProxy() != "" {
 		web.InternetProxy, err = url.Parse(sysProvider.GetInternetProxy())
 		if err != nil {
@@ -213,6 +225,7 @@ func main() {
 			sched.Run()
 		}
 	}()
+
 	go func() {
 		sc := make(chan os.Signal, 1)
 		signal.Notify(sc, os.Interrupt, syscall.SIGTERM)
